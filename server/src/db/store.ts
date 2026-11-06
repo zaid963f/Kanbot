@@ -2,7 +2,9 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { rename, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { env } from '../config/env.js';
+import { ensureWorkflow } from '../services/workflow.service.js';
 import type {
+  OptionColor,
   SprintStats,
   SprintStatus,
   SprintSummary,
@@ -22,6 +24,12 @@ export interface UserRecord {
   createdAt: string;
 }
 
+export interface WorkflowOptionRecord {
+  id: string;
+  name: string;
+  color: OptionColor;
+}
+
 export interface ProjectRecord {
   id: string;
   userId: string;
@@ -32,6 +40,8 @@ export interface ProjectRecord {
   nextTodoNumber: number;
   /** Next number for default sprint names (Sprint <n>). */
   nextSprintNumber: number;
+  statuses: WorkflowOptionRecord[];
+  priorities: WorkflowOptionRecord[];
   createdAt: string;
   updatedAt: string;
 }
@@ -95,6 +105,7 @@ class JsonStore {
   constructor() {
     mkdirSync(dirname(this.file), { recursive: true });
     this.data = existsSync(this.file) ? { ...empty(), ...JSON.parse(readFileSync(this.file, 'utf8')) } : empty();
+    this.data.projects.forEach(ensureWorkflow); // data saved before custom statuses/priorities existed
   }
 
   /** Mutate data, then persist. Returns whatever the mutator returns. */
@@ -106,6 +117,7 @@ class JsonStore {
 
   /** Replace everything (used by the seed script). */
   reset(data: Data = empty()) {
+    data.projects.forEach(ensureWorkflow);
     this.data = data;
     this.scheduleFlush();
   }

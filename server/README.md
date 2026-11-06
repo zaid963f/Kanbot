@@ -19,7 +19,7 @@ npm run typecheck
 
 | `.env` | Behaviour |
 |---|---|
-| `AI_API_KEY` empty (default) | **Mock mode**: rule-based answers, instant, free, offline. `GET /api/ai/status` → `{ "mode": "mock" }` |
+| `AI_API_KEY` empty, or `AI_MOCK=true` | **Mock mode**: rule-based answers, instant, free, offline. `GET /api/ai/status` → `{ "mode": "mock" }` |
 | `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` set | **Real LLM** via `POST {AI_BASE_URL}/chat/completions` (OpenRouter, Groq, Gemini, Ollama… see `.env.example`) |
 
 The server validates everything the model returns: enums are coerced, story points are snapped to 1/2/3/5/8/13, sprint plans only contain real backlog ids within capacity. If the model returns unusable JSON for todos or a plan, the mock result is used instead. AI routes are limited to 20 requests per minute per user.

@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { env } from '../config/env.js';
 import { db, type ProjectRecord, type SprintRecord, type TodoRecord } from '../db/store.js';
 import { activeSprintOf, byOrder, statsFor, todosOfSprint } from '../services/board.service.js';
+import { optionName, priorityRank } from '../services/workflow.service.js';
 import {
   STORY_POINTS,
   TODO_PRIORITIES,
@@ -16,13 +17,14 @@ import {
   type ChatMessage,
   type DraftTodo,
   type StoryPoints,
-  type TodoPriority,
 } from '../types/api.js';
 import { complete, extractJson } from './client.js';
 
 export const aiSource = (): AiSource => (env.aiEnabled ? 'ai' : 'mock');
 
-const PRIORITY_RANK: Record<TodoPriority, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+/** Sort helper: most important priority first (the project's priority list is lowest → highest). */
+const byPriority = (project: ProjectRecord) => (a: TodoRecord, b: TodoRecord) =>
+  priorityRank(project, b.priority) - priorityRank(project, a.priority);
 
 /** 4 → 3 or 5 (nearest allowed value), invalid → null. */
 function snapPoints(n: unknown): StoryPoints | null {
@@ -33,8 +35,9 @@ function snapPoints(n: unknown): StoryPoints | null {
 const backlogOf = (projectId: string) =>
   db.data.todos.filter((t) => t.projectId === projectId && t.sprintId === null).sort(byOrder);
 
-const line = (t: TodoRecord) =>
-  `- ${t.key} [id:${t.id}] "${t.title}" (${t.type}, ${t.priority}, ${t.storyPoints ?? '?'} pts, ${t.status})`;
+const line = (project: ProjectRecord) => (t: TodoRecord) =>
+  `- ${t.key} [id:${t.id}] "${t.title}" (${t.type}, ${optionName(project, 'priorities', t.priority)} priority, ` +
+  `${t.storyPoints ?? '?'} pts, ${optionName(project, 'statuses', t.status)})`;
 
 /** A compact text snapshot of the project, given to the LLM as context. */
 function projectContext(project: ProjectRecord): string {
@@ -48,12 +51,16 @@ function projectContext(project: ProjectRecord): string {
       `Active sprint: ${active.name}, goal "${active.goal || 'none'}", ${active.startDate} → ${active.endDate}, ` +
         `${s.doneTodos}/${s.totalTodos} todos and ${s.donePoints}/${s.totalPoints} points done.`,
       'Active sprint todos:',
-      ...todos.slice(0, 60).map(line),
+      ...todos.slice(0, 60).map(line(project)),
     );
   } else {
     parts.push('There is no active sprint.');
   }
-  parts.push(`Backlog (${backlog.length} todos):`, ...backlog.slice(0, 80).map(line));
+  parts.push(
+    `Statuses (board columns, in order): ${project.statuses.map((o) => optionName(project, 'statuses', o.id)).join(', ')}`,
+    `Priorities (lowest to highest): ${project.priorities.map((o) => optionName(project, 'priorities', o.id)).join(', ')}`,
+  );
+  parts.push(`Backlog (${backlog.length} todos):`, ...backlog.slice(0, 80).map(line(project)));
   return parts.filter(Boolean).join('\n');
 }
 
@@ -144,7 +151,7 @@ export async function planSprint(project: ProjectRecord, capacity: number, focus
   if (backlog.length === 0) {
     return { goal: focus ?? '', todoIds: [], totalPoints: 0, reasoning: 'The backlog is empty. Add some todos first.' };
   }
-  if (!env.aiEnabled) return mockPlanSprint(backlog, capacity, focus);
+  if (!env.aiEnabled) return mockPlanSprint(project, backlog, capacity, focus);
 
   const reply = await complete([
     {
@@ -158,7 +165,7 @@ export async function planSprint(project: ProjectRecord, capacity: number, focus
     { role: 'user', content: `${projectContext(project)}\n\nCapacity: ${capacity} points.${focus ? `\nFocus: ${focus}` : ''}` },
   ]);
   const parsed = planSchema.safeParse(extractJson(reply));
-  if (!parsed.success) return mockPlanSprint(backlog, capacity, focus);
+  if (!parsed.success) return mockPlanSprint(project, backlog, capacity, focus);
 
   // Never trust ids or math from the model: keep valid backlog ids, enforce capacity.
   const byId = new Map(backlog.map((t) => [t.id, t]));
@@ -178,7 +185,7 @@ export async function planSprint(project: ProjectRecord, capacity: number, focus
   };
 }
 
-function mockPlanSprint(backlog: TodoRecord[], capacity: number, focus?: string): SprintPlan {
+function mockPlanSprint(project: ProjectRecord, backlog: TodoRecord[], capacity: number, focus?: string): SprintPlan {
   const words = (focus ?? '').toLowerCase().split(/\W+/).filter((w) => w.length > 3);
   const matchesFocus = (t: TodoRecord) => words.some((w) => `${t.title} ${t.description} ${t.labels.join(' ')}`.toLowerCase().includes(w));
   const ranked = backlog
@@ -186,7 +193,7 @@ function mockPlanSprint(backlog: TodoRecord[], capacity: number, focus?: string)
     .sort(
       (a, b) =>
         Number(matchesFocus(b)) - Number(matchesFocus(a)) ||
-        PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] ||
+        byPriority(project)(a, b) ||
         Number(b.type === 'bug') - Number(a.type === 'bug') ||
         byOrder(a, b),
     );
@@ -198,7 +205,9 @@ function mockPlanSprint(backlog: TodoRecord[], capacity: number, focus?: string)
     total += t.storyPoints!;
   }
   const unestimated = backlog.length - ranked.length;
-  const counts = TODO_PRIORITIES.map((p) => [p, picked.filter((t) => t.priority === p).length] as const)
+  const counts = [...project.priorities]
+    .reverse()
+    .map((p) => [optionName(project, 'priorities', p.id).toLowerCase(), picked.filter((t) => t.priority === p.id).length] as const)
     .filter(([, n]) => n > 0)
     .map(([p, n]) => `${n} ${p}`)
     .join(', ');
@@ -269,9 +278,9 @@ export async function summarizeSprint(project: ProjectRecord, sprint: SprintReco
           `Sprint: ${sprint.name} (${sprint.status}), goal "${sprint.goal || 'none'}", ${sprint.startDate} → ${sprint.endDate}`,
           `Stats: ${stats.doneTodos}/${stats.totalTodos} todos, ${stats.donePoints}/${stats.totalPoints} points (${pct}%), carried over: ${stats.carriedOver}`,
           'Done:',
-          ...done.map(line),
+          ...done.map(line(project)),
           'Not done:',
-          ...(open.length ? open.map(line) : ['(none)']),
+          ...(open.length ? open.map(line(project)) : ['(none)']),
         ].join('\n'),
       },
     ],
@@ -313,21 +322,25 @@ function mockChat(project: ProjectRecord, question: string): string {
   }
   if (/sprint|progress|status|how.*(going|doing)/.test(q)) {
     if (!active) return 'There is no active sprint right now. Plan one from the backlog and press **Start sprint**.';
-    const s = statsFor(todosOfSprint(active.id));
+    const s = statsFor(todosOfSprint(active.id), project.statuses.map((o) => o.id));
+    const byStatus = project.statuses
+      .filter((o) => o.id !== 'done')
+      .map((o) => `${optionName(project, 'statuses', o.id)}: ${s.byStatus[o.id] ?? 0}`)
+      .join(', ');
     return [
       `**${active.name}** (${active.startDate} → ${active.endDate})${active.goal ? ` — goal: _${active.goal}_` : ''}`,
       '',
       `- Done: ${s.doneTodos}/${s.totalTodos} todos, ${s.donePoints}/${s.totalPoints} points`,
-      `- In progress: ${s.byStatus.in_progress}, in review: ${s.byStatus.in_review}, to do: ${s.byStatus.todo}`,
+      `- ${byStatus}`,
     ].join('\n');
   }
   if (/backlog|priorit|important|urgent|what.*(next|first)/.test(q)) {
-    const top = [...backlog].sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] || byOrder(a, b)).slice(0, 5);
+    const top = [...backlog].sort((a, b) => byPriority(project)(a, b) || byOrder(a, b)).slice(0, 5);
     if (!top.length) return 'Your backlog is empty. Try **Create todos** to fill it.';
-    return ['Here are the most important todos in your backlog:', '', ...top.map((t) => `- **${t.key}** ${t.title} _(${t.priority}, ${t.storyPoints ?? '?'} pts)_`)].join('\n');
+    return ['Here are the most important todos in your backlog:', '', ...top.map((t) => `- **${t.key}** ${t.title} _(${optionName(project, 'priorities', t.priority)}, ${t.storyPoints ?? '?'} pts)_`)].join('\n');
   }
   return [
-    "Hi! I'm Kanbot, your sprint assistant. _(Running in mock mode — no AI key configured.)_",
+    "Hi! I'm Kanbot, your sprint assistant. _(Running in mock mode — answers are rule-based, not a real AI.)_",
     '',
     'Try asking me:',
     '- "How is the sprint going?"',

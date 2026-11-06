@@ -198,6 +198,42 @@ await step('delete: planned sprint returns todos to backlog, todo delete, 404s',
   assert.equal((await call('GET', '/nope')).status, 404);
 });
 
+await step('workflow: rename built-ins, add/remove custom statuses and priorities', async () => {
+  const project = (await call('GET', `/projects/${projectId}`)).json.project;
+  assert.deepEqual(project.statuses.map((s: { id: string }) => s.id), ['todo', 'in_progress', 'in_review', 'done']);
+  assert.deepEqual(project.priorities.map((p: { id: string }) => p.id), ['low', 'medium', 'high', 'urgent']);
+
+  // Rename "todo", add a custom status and priority.
+  const keep = (list: { id: string; name: string; color: string }[]) => list.map(({ id, name, color }) => ({ id, name, color }));
+  let res = await call('PATCH', `/projects/${projectId}`, {
+    statuses: [{ ...keep(project.statuses)[0], name: 'Ready' }, { name: 'Blocked', color: 'red' }, ...keep(project.statuses).slice(1)],
+    priorities: [...keep(project.priorities), { name: 'Critical', color: 'violet' }],
+  });
+  assert.equal(res.status, 200);
+  const blocked = res.json.project.statuses[1];
+  const critical = res.json.project.priorities[4];
+  assert.equal(blocked.name, 'Blocked');
+  assert.equal(blocked.builtIn, false);
+  assert.equal(res.json.project.statuses[0].name, 'Ready');
+
+  // Todos can use them; unknown values are rejected.
+  const todo = (await call('POST', `/projects/${projectId}/todos`, { title: 'Custom', status: blocked.id, priority: critical.id })).json.todo;
+  assert.equal(todo.status, blocked.id);
+  assert.equal((await call('POST', `/projects/${projectId}/todos`, { title: 'Bad', status: 'nope' })).status, 400);
+  assert.equal((await call('PATCH', `/todos/${todo.id}`, { priority: 'nope' })).status, 400);
+
+  // Built-ins cannot be removed.
+  res = await call('PATCH', `/projects/${projectId}`, { priorities: keep(res.json.project.priorities).slice(1) });
+  assert.equal(res.status, 400);
+
+  // Removing custom ones moves their todos back to the defaults.
+  res = await call('PATCH', `/projects/${projectId}`, { statuses: keep(project.statuses), priorities: keep(project.priorities) });
+  assert.equal(res.status, 200);
+  const after = (await call('GET', `/todos/${todo.id}`)).json.todo;
+  assert.equal(after.status, 'todo');
+  assert.equal(after.priority, 'medium');
+});
+
 await step("isolation: another user can't see the project", async () => {
   const other = await call('POST', '/auth/register', { name: 'Omar', email: 'omar@test.dev', password: 'password123' });
   token = other.json.token;

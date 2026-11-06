@@ -21,7 +21,7 @@ import {
   toSprint,
   toTodo,
 } from '../services/board.service.js';
-import { TODO_STATUSES, type SprintBoardResponse, type SprintListResponse, type Todo, type TodoStatus } from '../types/api.js';
+import { DONE_STATUS, type SprintBoardResponse, type SprintListResponse, type Todo, type TodoStatus } from '../types/api.js';
 import { dateOnly } from './schemas.js';
 
 /** Mounted at /api. */
@@ -96,9 +96,9 @@ sprintsRouter.get('/sprints/:sprintId', (req, res) => {
 
 /** The board: the sprint plus its todos grouped by status column. */
 sprintsRouter.get('/sprints/:sprintId/todos', (req, res) => {
-  const { sprint } = getSprint(currentUser(req).id, req.params.sprintId);
-  const columns = Object.fromEntries(TODO_STATUSES.map((s) => [s, [] as Todo[]])) as Record<TodoStatus, Todo[]>;
-  for (const todo of todosOfSprint(sprint.id)) columns[todo.status].push(toTodo(todo));
+  const { sprint, project } = getSprint(currentUser(req).id, req.params.sprintId);
+  const columns: Record<TodoStatus, Todo[]> = Object.fromEntries(project.statuses.map((s) => [s.id, [] as Todo[]]));
+  for (const todo of todosOfSprint(sprint.id)) (columns[todo.status] ??= []).push(toTodo(todo));
   res.json({ sprint: toSprint(sprint), columns } satisfies SprintBoardResponse);
 });
 
@@ -155,11 +155,11 @@ sprintsRouter.post('/sprints/:sprintId/complete', (req, res) => {
   }
 
   const todos = todosOfSprint(sprint.id);
-  const unfinished = todos.filter((t) => t.status !== 'done');
+  const unfinished = todos.filter((t) => t.status !== DONE_STATUS);
   db.write(() => {
-    sprint.completedStats = { ...statsFor(todos), carriedOver: unfinished.length };
+    sprint.completedStats = { ...statsFor(todos, project.statuses.map((s) => s.id)), carriedOver: unfinished.length };
     for (const todo of unfinished) moveTodo(todo, { sprintId: target, status: todo.status, position: Number.MAX_SAFE_INTEGER });
-    renumber(listOf({ projectId: project.id, sprintId: sprint.id, status: 'done' }));
+    renumber(listOf({ projectId: project.id, sprintId: sprint.id, status: DONE_STATUS }));
     Object.assign(sprint, { status: 'completed', completedAt: now(), updatedAt: now() });
     project.updatedAt = now();
   });

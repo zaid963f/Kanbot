@@ -5,7 +5,7 @@
 import { db, type ProjectRecord, type SprintRecord, type TodoRecord, type UserRecord } from '../db/store.js';
 import { conflict, notFound } from '../lib/errors.js';
 import {
-  TODO_STATUSES,
+  DONE_STATUS,
   type Project,
   type ProjectWithStats,
   type Sprint,
@@ -14,6 +14,7 @@ import {
   type TodoStatus,
   type User,
 } from '../types/api.js';
+import { toWorkflowOptions } from './workflow.service.js';
 
 export const now = () => new Date().toISOString();
 export const today = () => new Date().toISOString().slice(0, 10);
@@ -83,8 +84,8 @@ export function nextOrder(where: Pick<TodoRecord, 'projectId' | 'sprintId' | 'st
 
 /** Sets status and keeps completedAt in sync. */
 export function applyStatus(todo: TodoRecord, status: TodoStatus) {
-  if (todo.status !== 'done' && status === 'done') todo.completedAt = now();
-  if (status !== 'done') todo.completedAt = null;
+  if (todo.status !== DONE_STATUS && status === DONE_STATUS) todo.completedAt = now();
+  if (status !== DONE_STATUS) todo.completedAt = null;
   todo.status = status;
 }
 
@@ -103,17 +104,21 @@ export function moveTodo(todo: TodoRecord, target: { sprintId: string | null; st
 
 // ───────────── Sprint stats ─────────────
 
-export function statsFor(todos: TodoRecord[]): SprintStats {
-  const byStatus = Object.fromEntries(TODO_STATUSES.map((s) => [s, 0])) as Record<TodoStatus, number>;
+/** `statuses` = the project's status ids, so empty columns show up as 0. */
+export function statsFor(todos: TodoRecord[], statuses: readonly TodoStatus[] = []): SprintStats {
+  const byStatus: Record<TodoStatus, number> = Object.fromEntries(statuses.map((s) => [s, 0]));
   let totalPoints = 0;
   let donePoints = 0;
   for (const t of todos) {
-    byStatus[t.status]++;
+    byStatus[t.status] = (byStatus[t.status] ?? 0) + 1;
     totalPoints += t.storyPoints ?? 0;
-    if (t.status === 'done') donePoints += t.storyPoints ?? 0;
+    if (t.status === DONE_STATUS) donePoints += t.storyPoints ?? 0;
   }
-  return { totalTodos: todos.length, doneTodos: byStatus.done, totalPoints, donePoints, byStatus };
+  return { totalTodos: todos.length, doneTodos: byStatus[DONE_STATUS] ?? 0, totalPoints, donePoints, byStatus };
 }
+
+export const statusIdsOf = (projectId: string): TodoStatus[] =>
+  db.data.projects.find((p) => p.id === projectId)?.statuses.map((s) => s.id) ?? [];
 
 export const todosOfSprint = (sprintId: string) => db.data.todos.filter((t) => t.sprintId === sprintId).sort(byOrder);
 
@@ -140,6 +145,8 @@ export const toProject = (p: ProjectRecord): Project => ({
   name: p.name,
   key: p.key,
   description: p.description,
+  statuses: toWorkflowOptions('statuses', p.statuses),
+  priorities: toWorkflowOptions('priorities', p.priorities),
   createdAt: p.createdAt,
   updatedAt: p.updatedAt,
 });
@@ -171,7 +178,7 @@ export const toSprint = (s: SprintRecord): Sprint => ({
   completedAt: s.completedAt,
   completedStats: s.completedStats,
   summary: s.summary,
-  stats: statsFor(todosOfSprint(s.id)),
+  stats: statsFor(todosOfSprint(s.id), statusIdsOf(s.projectId)),
   createdAt: s.createdAt,
   updatedAt: s.updatedAt,
 });

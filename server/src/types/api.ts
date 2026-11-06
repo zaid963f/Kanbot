@@ -77,6 +77,10 @@ export interface Project {
   /** 2–6 uppercase letters, used to build todo keys, e.g. "KAN" → "KAN-12". */
   key: string;
   description: string;
+  /** The board columns of this project, in display order. Always contains the built-in TODO_STATUSES. */
+  statuses: WorkflowOption[];
+  /** Priorities of this project, lowest first, most important last. Always contains the built-in TODO_PRIORITIES. */
+  priorities: WorkflowOption[];
   createdAt: string;
   updatedAt: string;
 }
@@ -96,16 +100,56 @@ export interface CreateProjectRequest {
   description?: string; // ≤ 500 chars
 }
 
-export type UpdateProjectRequest = Partial<CreateProjectRequest>;
+/**
+ * PATCH /projects/:id. `statuses` / `priorities` replace the whole list (the
+ * new order is kept). Built-ins must stay in the list. Todos using a removed
+ * custom option move to "todo" / "medium".
+ */
+export type UpdateProjectRequest = Partial<CreateProjectRequest> & {
+  statuses?: WorkflowOptionInput[];
+  priorities?: WorkflowOptionInput[];
+};
+
+// ───────────────────────────── Statuses & priorities ─────────────────────────────
+
+/** Colour tokens the UI knows how to render in light and dark themes. */
+export const OPTION_COLORS = ['gray', 'blue', 'green', 'amber', 'red', 'violet', 'brand'] as const;
+export type OptionColor = (typeof OPTION_COLORS)[number];
+
+export type WorkflowKind = 'statuses' | 'priorities';
+
+export const WORKFLOW_LIMITS = { maxOptions: 12, nameMax: 30 } as const;
+
+export interface WorkflowOption {
+  /** Built-ins use their fixed id ("todo", "high", ...). Custom ones get a generated id. */
+  id: string;
+  /** "" = a built-in that was not renamed: show its default (translated) name. */
+  name: string;
+  color: OptionColor;
+  /** Built-ins can be renamed, recoloured and reordered, but not removed. */
+  builtIn: boolean;
+}
+
+export interface WorkflowOptionInput {
+  id?: string; // omit for a new option
+  name: string; // ≤ 30 chars; required for custom options, "" = default name for built-ins
+  color: OptionColor;
+}
 
 // ───────────────────────────── Todos ─────────────────────────────
 
-/** The four board columns, in display order. */
+/** The built-in statuses every project has. Projects can add more (see `Project.statuses`). */
 export const TODO_STATUSES = ['todo', 'in_progress', 'in_review', 'done'] as const;
-export type TodoStatus = (typeof TODO_STATUSES)[number];
+/** A status id from `Project.statuses`. "done" is the one that marks a todo as finished. */
+export type TodoStatus = string;
+export const DEFAULT_STATUS = 'todo';
+export const DONE_STATUS = 'done';
 
+/** The built-in priorities every project has. Projects can add more (see `Project.priorities`). */
 export const TODO_PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
-export type TodoPriority = (typeof TODO_PRIORITIES)[number];
+/** A priority id from `Project.priorities`. */
+export type TodoPriority = string;
+export const DEFAULT_PRIORITY = 'medium';
 
 export const TODO_TYPES = ['task', 'story', 'bug'] as const;
 export type TodoType = (typeof TODO_TYPES)[number];
@@ -143,8 +187,8 @@ export interface CreateTodoRequest {
   title: string; // 1–200 chars
   description?: string; // ≤ 5000 chars
   type?: TodoType; // default "task"
-  status?: TodoStatus; // default "todo"
-  priority?: TodoPriority; // default "medium"
+  status?: TodoStatus; // default "todo"; must exist in Project.statuses
+  priority?: TodoPriority; // default "medium"; must exist in Project.priorities
   storyPoints?: StoryPoints | null;
   labels?: string[]; // ≤ 10 labels, each ≤ 30 chars
   dueDate?: string | null;
@@ -197,7 +241,7 @@ export interface SprintStats {
   doneTodos: number;
   totalPoints: number; // sum of storyPoints (null counts as 0)
   donePoints: number;
-  byStatus: Record<TodoStatus, number>;
+  byStatus: Record<TodoStatus, number>; // every status of the project, plus any other status in use
 }
 
 export interface SprintSummary {
@@ -255,7 +299,7 @@ export interface SprintListResponse {
 /** GET /sprints/:id/todos — the board. Sorted by status column, then `order`. */
 export interface SprintBoardResponse {
   sprint: Sprint;
-  columns: Record<TodoStatus, Todo[]>;
+  columns: Record<TodoStatus, Todo[]>; // one entry per project status
 }
 
 // ───────────────────────────── AI assistant ─────────────────────────────
@@ -274,7 +318,7 @@ export interface DraftTodo {
   title: string;
   description: string;
   type: TodoType;
-  priority: TodoPriority;
+  priority: TodoPriority; // always one of the built-in TODO_PRIORITIES
   storyPoints: StoryPoints | null;
 }
 

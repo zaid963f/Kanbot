@@ -1,11 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import { z } from 'zod';
-import { db, type ProjectRecord } from '../db/store.js';
+import { db, type ProjectRecord, type TodoRecord } from '../db/store.js';
 import { conflict } from '../lib/errors.js';
 import { currentUser } from '../middleware/auth.js';
 import { parse } from '../middleware/validate.js';
-import { getProject, now, toProjectWithStats } from '../services/board.service.js';
+import { applyStatus, getProject, moveTodo, now, toProjectWithStats } from '../services/board.service.js';
+import {
+  buildWorkflowList,
+  defaultPriorities,
+  defaultStatuses,
+  fallbackFor,
+  usesOption,
+  workflowListSchema,
+} from '../services/workflow.service.js';
+import type { WorkflowKind } from '../types/api.js';
 
 export const projectsRouter = Router();
 
@@ -25,6 +34,8 @@ const updateSchema = z.object({
   name: z.string().trim().min(1, 'Name is required').max(80),
   key: keySchema,
   description: z.string().trim().max(500),
+  statuses: workflowListSchema,
+  priorities: workflowListSchema,
 }).partial();
 
 /** "Mobile App Redesign" → "MAR", "Kanbot" → "KAN". */
@@ -71,6 +82,8 @@ projectsRouter.post('/', (req, res) => {
     description: body.description,
     nextTodoNumber: 1,
     nextSprintNumber: 1,
+    statuses: defaultStatuses(),
+    priorities: defaultPriorities(),
     createdAt: now(),
     updatedAt: now(),
   };
@@ -86,14 +99,41 @@ projectsRouter.get('/:projectId', (req, res) => {
 projectsRouter.patch('/:projectId', (req, res) => {
   const user = currentUser(req);
   const project = getProject(user.id, req.params.projectId);
-  const body = parse(updateSchema, req.body);
-  if (body.key) assertUniqueKey(user.id, body.key, project.id);
-  db.write(() => {
-    Object.assign(project, body, { updatedAt: now() });
+  const { statuses, priorities, ...fields } = parse(updateSchema, req.body);
+  if (fields.key) assertUniqueKey(user.id, fields.key, project.id);
+  // Validate both lists before changing anything.
+  const lists = (
+    [
+      ['statuses', statuses],
+      ['priorities', priorities],
+    ] as const
+  ).flatMap(([kind, input]) => (input ? [{ kind, ...buildWorkflowList(project, kind, input) }] : []));
+
+  db.write((d) => {
+    Object.assign(project, fields, { updatedAt: now() });
     // Note: existing todo keys keep their old prefix — keys never change.
+    for (const { kind, options, removed } of lists) {
+      project[kind] = options;
+      if (removed.length) reassignTodos(d.todos.filter((t) => t.projectId === project.id && usesOption(kind, removed)(t)), kind);
+    }
   });
   res.json({ project: toProjectWithStats(project) });
 });
+
+/** Todos whose status/priority was deleted fall back to the default one. Call inside db.write. */
+function reassignTodos(todos: TodoRecord[], kind: WorkflowKind) {
+  const fallback = fallbackFor(kind);
+  for (const todo of todos) {
+    if (kind === 'priorities') {
+      todo.priority = fallback;
+    } else if (todo.sprintId === null) {
+      applyStatus(todo, fallback); // backlog: one list, status does not change the position
+    } else {
+      moveTodo(todo, { sprintId: todo.sprintId, status: fallback, position: Number.MAX_SAFE_INTEGER });
+    }
+    todo.updatedAt = now();
+  }
+}
 
 projectsRouter.delete('/:projectId', (req, res) => {
   const project = getProject(currentUser(req).id, req.params.projectId);

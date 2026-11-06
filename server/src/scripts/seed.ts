@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { db, type Data, type ProjectRecord, type SprintRecord, type TodoRecord } from '../db/store.js';
 import { hashPassword } from '../lib/password.js';
 import { addDays, today } from '../services/board.service.js';
+import { defaultPriorities, defaultStatuses } from '../services/workflow.service.js';
 import type { StoryPoints, TodoPriority, TodoStatus, TodoType } from '../types/api.js';
 
 const iso = (date: string) => `${date}T09:00:00.000Z`;
@@ -29,6 +30,8 @@ const project: ProjectRecord = {
   description: 'Building the Kanbot frontend: auth, backlog, sprint board and the AI assistant.',
   nextTodoNumber: 1,
   nextSprintNumber: 4,
+  statuses: defaultStatuses(),
+  priorities: defaultPriorities(),
   createdAt: iso(addDays(t0, -30)),
   updatedAt: iso(t0),
 };
@@ -41,6 +44,8 @@ const sideProject: ProjectRecord = {
   description: 'My portfolio website.',
   nextTodoNumber: 1,
   nextSprintNumber: 1,
+  statuses: defaultStatuses(),
+  priorities: defaultPriorities(),
   createdAt: iso(addDays(t0, -10)),
   updatedAt: iso(addDays(t0, -2)),
 };

@@ -18,8 +18,8 @@ import {
   renumber,
   toTodo,
 } from '../services/board.service.js';
+import { assertWorkflowValues } from '../services/workflow.service.js';
 import type { BulkCreateTodosResponse, TodoListResponse } from '../types/api.js';
-import { TODO_STATUSES } from '../types/api.js';
 import { createTodoSchema, priority, status, todoType, updateTodoSchema } from './schemas.js';
 
 /** Mounted at /api. */
@@ -52,8 +52,6 @@ function buildTodo(project: ProjectRecord, input: CreateInput): TodoRecord {
   return todo;
 }
 
-const STATUS_RANK = Object.fromEntries(TODO_STATUSES.map((s, i) => [s, i])) as Record<string, number>;
-
 const listQuery = z.object({
   sprintId: z.string().optional(),
   status: status.optional(),
@@ -66,6 +64,7 @@ todosRouter.get('/projects/:projectId/todos', (req, res) => {
   const project = getProject(currentUser(req).id, req.params.projectId);
   const q = parse(listQuery, req.query);
   const search = q.search?.toLowerCase();
+  const statusRank = (s: string) => project.statuses.findIndex((o) => o.id === s);
   const todos = db.data.todos
     .filter((t) => t.projectId === project.id)
     .filter((t) => q.sprintId === undefined || t.sprintId === (q.sprintId === 'backlog' ? null : q.sprintId))
@@ -79,7 +78,7 @@ todosRouter.get('/projects/:projectId/todos', (req, res) => {
     )
     .sort((a, b) =>
       a.sprintId === b.sprintId
-        ? (a.sprintId === null ? 0 : STATUS_RANK[a.status]! - STATUS_RANK[b.status]!) || byOrder(a, b)
+        ? (a.sprintId === null ? 0 : statusRank(a.status) - statusRank(b.status)) || byOrder(a, b)
         : (a.sprintId ?? '').localeCompare(b.sprintId ?? ''),
     );
   res.json({ todos: todos.map(toTodo) } satisfies TodoListResponse);
@@ -88,6 +87,7 @@ todosRouter.get('/projects/:projectId/todos', (req, res) => {
 todosRouter.post('/projects/:projectId/todos', (req, res) => {
   const project = getProject(currentUser(req).id, req.params.projectId);
   const body = parse(createTodoSchema, req.body);
+  assertWorkflowValues(project, body);
   assertOpenSprint(project.id, body.sprintId);
   const todo = db.write((d) => {
     const t = buildTodo(project, body);
@@ -101,7 +101,10 @@ todosRouter.post('/projects/:projectId/todos', (req, res) => {
 todosRouter.post('/projects/:projectId/todos/bulk', (req, res) => {
   const project = getProject(currentUser(req).id, req.params.projectId);
   const body = parse(z.object({ todos: z.array(createTodoSchema).min(1).max(50) }), req.body);
-  body.todos.forEach((t, i) => assertOpenSprint(project.id, t.sprintId, `todos.${i}.sprintId`));
+  body.todos.forEach((t, i) => {
+    assertWorkflowValues(project, t, `todos.${i}.`);
+    assertOpenSprint(project.id, t.sprintId, `todos.${i}.sprintId`);
+  });
   const todos = db.write((d) => {
     const created = body.todos.map((input) => {
       const t = buildTodo(project, input);
@@ -122,6 +125,7 @@ todosRouter.get('/todos/:todoId', (req, res) => {
 todosRouter.patch('/todos/:todoId', (req, res) => {
   const { todo, project } = getTodo(currentUser(req).id, req.params.todoId);
   const { sprintId, status: newStatus, ...fields } = parse(updateTodoSchema, req.body);
+  assertWorkflowValues(project, { status: newStatus, priority: fields.priority });
   const sprintChanges = sprintId !== undefined && sprintId !== todo.sprintId;
   if (sprintChanges || (newStatus && newStatus !== todo.status)) assertMovable(todo);
   if (sprintChanges) assertOpenSprint(project.id, sprintId);
@@ -152,6 +156,7 @@ todosRouter.post('/todos/:todoId/move', (req, res) => {
     }),
     req.body,
   );
+  assertWorkflowValues(project, { status: body.status });
   assertMovable(todo);
   const sprintId = body.sprintId === undefined ? todo.sprintId : body.sprintId;
   if (sprintId !== todo.sprintId) assertOpenSprint(project.id, sprintId);
