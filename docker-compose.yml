@@ -1,0 +1,43 @@
+# Kanbot — full stack for Dokploy (Create Service → Compose → point at this repo).
+# In Dokploy, add a domain to the `client` service (port 80). The client's nginx
+# proxies /api to the `server` service, so the API needs no public domain.
+services:
+  server:
+    build:
+      context: ./server
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATA_FILE: /app/data/db.json
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET (at least 16 chars)}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      # Your public client URL(s), comma-separated. Only matters if the API is called cross-origin.
+      CLIENT_ORIGIN: ${CLIENT_ORIGIN:-http://localhost}
+      # Leave AI_API_KEY empty to use the built-in mock assistant.
+      AI_MOCK: ${AI_MOCK:-false}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-https://openrouter.ai/api/v1}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_TIMEOUT_MS: ${AI_TIMEOUT_MS:-60000}
+    volumes:
+      - kanbot-data:/app/data
+    expose:
+      - "4000"
+
+  client:
+    build:
+      context: ./client
+      args:
+        VITE_API_URL: /api
+    restart: unless-stopped
+    environment:
+      API_UPSTREAM: http://server:4000
+    depends_on:
+      server:
+        condition: service_healthy
+    expose:
+      - "80"
+
+volumes:
+  kanbot-data:
