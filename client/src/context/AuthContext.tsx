@@ -26,8 +26,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       removeToken();
       queryClient.clear();
       const currentPage = window.location.pathname;
-      window.location.href = `/login?redirect=${encodeURIComponent(currentPage)}&expired=1`;
+      window.location.replace(`/login?redirect=${encodeURIComponent(currentPage)}&expired=1`);
     });
+
+    // Back/forward button: the browser may restore an old snapshot of the page (bfcache)
+    // without running our code, e.g. showing the app after logout. Reload so the guards run again.
+    function handlePageShow(event: PageTransitionEvent) {
+      if (event.persisted) window.location.reload();
+    }
+    // Logged in or out in another tab: reload so this tab follows.
+    function handleStorage(event: StorageEvent) {
+      if (event.key === 'token' || event.key === null) window.location.reload();
+    }
+    window.addEventListener('pageshow', handlePageShow);
+    window.addEventListener('storage', handleStorage);
 
     // Stay logged in after a page reload.
     if (getToken()) {
@@ -37,6 +49,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .catch(() => removeToken())
         .finally(() => setLoading(false));
     }
+
+    return () => {
+      window.removeEventListener('pageshow', handlePageShow);
+      window.removeEventListener('storage', handleStorage);
+    };
   }, [queryClient]);
 
   async function login(email: string, password: string) {
@@ -55,7 +72,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     removeToken();
     queryClient.clear();
     // A full page load clears everything and lands on the login page.
-    window.location.href = '/login';
+    // replace() (not href) swaps out the current history entry, so Back can't return to the app.
+    window.location.replace('/login');
   }
 
   return (

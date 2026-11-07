@@ -39,7 +39,7 @@ export default function LoginPage() {
     try {
       await login(email.trim(), password);
       const redirect = searchParams.get('redirect');
-      navigate(redirect && redirect.startsWith('/') ? redirect : '/projects', { replace: true });
+      navigate(redirect && redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : '/projects', { replace: true });
     } catch (error) {
       setServerError(getErrorMessage(error));
     } finally {
