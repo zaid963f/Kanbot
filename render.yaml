@@ -1,0 +1,33 @@
+# Render Blueprint — deploys the Kanbot API on Render's free plan.
+# Render dashboard → New → Blueprint → pick this repo.
+services:
+  - type: web
+    name: kanbot-api
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      # Free plan has no persistent disk: this file is wiped on every redeploy/restart.
+      - key: DATA_FILE
+        value: ./data/db.json
+      # Set to your deployed client URL(s), comma-separated.
+      - key: CLIENT_ORIGIN
+        sync: false
+      # Leave AI_API_KEY empty to use the built-in mock assistant.
+      - key: AI_API_KEY
+        sync: false
+      - key: AI_BASE_URL
+        value: https://openrouter.ai/api/v1
+      - key: AI_MODEL
+        sync: false

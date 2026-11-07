@@ -14,6 +14,8 @@ import type { HealthResponse } from './types/api.js';
 
 export function createApp() {
   const app = express();
+  // Behind a hosting proxy (Render, Railway, …) so req.ip / rate limiting use the real client IP.
+  if (env.isProduction) app.set('trust proxy', 1);
 
   app.use(helmet());
   app.use(cors({ origin: env.clientOrigins }));
